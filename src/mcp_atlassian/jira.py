@@ -5,7 +5,7 @@ from typing import Any
 
 from atlassian import Jira
 
-from .config import JiraConfig
+from .config import JiraConfig, JiraAuthType
 from .document_types import Document
 from .preprocessing import TextPreprocessor
 
@@ -17,20 +17,55 @@ class JiraFetcher:
     """Handles fetching and parsing content from Jira."""
 
     def __init__(self):
+        # Get required URL and auth type
         url = os.getenv("JIRA_URL")
-        username = os.getenv("JIRA_USERNAME")
-        token = os.getenv("JIRA_API_TOKEN")
+        auth_type_str = os.getenv("JIRA_AUTH_TYPE", "api_token")
 
-        if not all([url, username, token]):
-            raise ValueError("Missing required Jira environment variables")
+        if not url:
+            raise ValueError("JIRA_URL environment variable is required")
 
-        self.config = JiraConfig(url=url, username=username, api_token=token)
-        self.jira = Jira(
-            url=self.config.url,
-            username=self.config.username,
-            password=self.config.api_token,  # API token is used as password
-            cloud=True,
-        )
+        try:
+            auth_type = JiraAuthType(auth_type_str.lower())
+        except ValueError:
+            raise ValueError(f"Invalid JIRA_AUTH_TYPE '{auth_type_str}'. Must be one of: {[t.value for t in JiraAuthType]}")
+
+        # Initialize config based on auth type
+        if auth_type == JiraAuthType.API_TOKEN:
+            username = os.getenv("JIRA_USERNAME")
+            api_token = os.getenv("JIRA_API_TOKEN")
+            if not all([username, api_token]):
+                raise ValueError("JIRA_USERNAME and JIRA_API_TOKEN are required for API token authentication")
+            self.config = JiraConfig(url=url, auth_type=auth_type, username=username, api_token=api_token)
+
+        elif auth_type == JiraAuthType.BASIC:
+            username = os.getenv("JIRA_USERNAME")
+            password = os.getenv("JIRA_PASSWORD")
+            if not all([username, password]):
+                raise ValueError("JIRA_USERNAME and JIRA_PASSWORD are required for basic authentication")
+            self.config = JiraConfig(url=url, auth_type=auth_type, username=username, password=password)
+
+        elif auth_type == JiraAuthType.PAT:
+            pat = os.getenv("JIRA_PAT")
+            if not pat:
+                raise ValueError("JIRA_PAT is required for personal access token authentication")
+            self.config = JiraConfig(url=url, auth_type=auth_type, pat=pat)
+
+        # Validate the configuration
+        self.config.validate()
+
+        # Initialize Jira client with appropriate auth
+        jira_kwargs = {
+            "url": self.config.url,
+            "cloud": self.config.is_cloud
+        }
+
+        if auth_type == JiraAuthType.PAT:
+            jira_kwargs["token"] = self.config.pat
+        else:
+            jira_kwargs["username"] = self.config.username
+            jira_kwargs["password"] = self.config.password or self.config.api_token
+
+        self.jira = Jira(**jira_kwargs)
         self.preprocessor = TextPreprocessor(self.config.url)
 
     def _clean_text(self, text: str) -> str:
