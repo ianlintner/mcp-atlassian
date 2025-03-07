@@ -13,9 +13,15 @@ from .jira import JiraFetcher
 from .preprocessing import markdown_to_confluence_storage
 
 # Configure logging
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp-atlassian")
 logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.INFO)
+
+# Log all environment variables
+logger.info("Environment variables:")
+for key, value in os.environ.items():
+    if "JIRA_" in key:
+        logger.info(f"{key}: {value}")
 
 
 def get_available_services():
@@ -28,15 +34,46 @@ def get_available_services():
         ]
     )
 
-    jira_vars = all([os.getenv("JIRA_URL"), os.getenv("JIRA_USERNAME"), os.getenv("JIRA_API_TOKEN")])
+    # Check for Jira URL and auth type
+    jira_url = os.getenv("JIRA_URL")
+    jira_auth_type = os.getenv("JIRA_AUTH_TYPE", "api_token")
+
+    if not jira_url:
+        return {"confluence": confluence_vars, "jira": False}
+
+    # Check auth credentials based on type
+    if jira_auth_type == "api_token":
+        jira_vars = all([jira_url, os.getenv("JIRA_USERNAME"), os.getenv("JIRA_API_TOKEN")])
+    elif jira_auth_type == "basic":
+        jira_vars = all([jira_url, os.getenv("JIRA_USERNAME"), os.getenv("JIRA_PASSWORD")])
+    elif jira_auth_type == "pat":
+        jira_vars = all([jira_url, os.getenv("JIRA_PAT")])
+    else:
+        jira_vars = False
 
     return {"confluence": confluence_vars, "jira": jira_vars}
 
 
 # Initialize services based on available credentials
 services = get_available_services()
-confluence_fetcher = ConfluenceFetcher() if services["confluence"] else None
-jira_fetcher = JiraFetcher() if services["jira"] else None
+logger.info(f"Available services: {services}")
+
+confluence_fetcher = None
+jira_fetcher = None
+
+try:
+    if services["confluence"]:
+        confluence_fetcher = ConfluenceFetcher()
+        logger.info("Confluence fetcher initialized")
+except Exception as e:
+    logger.error(f"Failed to initialize Confluence fetcher: {e}")
+
+try:
+    if services["jira"]:
+        jira_fetcher = JiraFetcher()
+        logger.info("Jira fetcher initialized")
+except Exception as e:
+    logger.error(f"Failed to initialize Jira fetcher: {e}")
 app = Server("mcp-atlassian")
 
 

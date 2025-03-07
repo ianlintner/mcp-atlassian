@@ -8,12 +8,13 @@ from tests.fixtures.jira_mocks import MOCK_JIRA_ISSUE_RESPONSE, MOCK_JIRA_JQL_RE
 
 
 @pytest.fixture
-def mock_env_vars():
-    """Set up mock environment variables for testing."""
+def mock_cloud_env_vars():
+    """Set up mock environment variables for cloud Jira."""
     with patch.dict(
         os.environ,
         {
             "JIRA_URL": "https://example.atlassian.net",
+            "JIRA_AUTH_TYPE": "api_token",
             "JIRA_USERNAME": "test_user",
             "JIRA_API_TOKEN": "test_token",
         },
@@ -22,7 +23,36 @@ def mock_env_vars():
 
 
 @pytest.fixture
-def mock_jira_fetcher(mock_env_vars):
+def mock_enterprise_basic_env_vars():
+    """Set up mock environment variables for enterprise Jira with basic auth."""
+    with patch.dict(
+        os.environ,
+        {
+            "JIRA_URL": "https://jira.enterprise.com",
+            "JIRA_AUTH_TYPE": "basic",
+            "JIRA_USERNAME": "test_user",
+            "JIRA_PASSWORD": "test_password",
+        },
+    ):
+        yield
+
+
+@pytest.fixture
+def mock_enterprise_pat_env_vars():
+    """Set up mock environment variables for enterprise Jira with PAT."""
+    with patch.dict(
+        os.environ,
+        {
+            "JIRA_URL": "https://jira.enterprise.com",
+            "JIRA_AUTH_TYPE": "pat",
+            "JIRA_PAT": "test_pat",
+        },
+    ):
+        yield
+
+
+@pytest.fixture
+def mock_jira_fetcher(mock_cloud_env_vars):
     """Create a JiraFetcher instance with mocked Jira client."""
     with patch("mcp_atlassian.jira.Jira") as mock_jira:
         # Configure the mock Jira client
@@ -35,18 +65,92 @@ def mock_jira_fetcher(mock_env_vars):
         return fetcher
 
 
-def test_jira_fetcher_initialization(mock_env_vars):
-    """Test JiraFetcher initialization with environment variables."""
+def test_jira_fetcher_cloud_initialization(mock_cloud_env_vars):
+    """Test JiraFetcher initialization with cloud environment variables."""
     fetcher = JiraFetcher()
     assert fetcher.config.url == "https://example.atlassian.net"
+    assert fetcher.config.auth_type.value == "api_token"
     assert fetcher.config.username == "test_user"
     assert fetcher.config.api_token == "test_token"
+    assert fetcher.config.is_cloud is True
 
 
-def test_jira_fetcher_initialization_missing_env_vars():
-    """Test JiraFetcher initialization with missing environment variables."""
-    with patch.dict(os.environ, {}, clear=True):
-        with pytest.raises(ValueError, match="Missing required Jira environment variables"):
+def test_jira_fetcher_enterprise_basic_initialization(mock_enterprise_basic_env_vars):
+    """Test JiraFetcher initialization with enterprise basic auth."""
+    fetcher = JiraFetcher()
+    assert fetcher.config.url == "https://jira.enterprise.com"
+    assert fetcher.config.auth_type.value == "basic"
+    assert fetcher.config.username == "test_user"
+    assert fetcher.config.password == "test_password"
+    assert fetcher.config.is_cloud is False
+
+
+def test_jira_fetcher_enterprise_pat_initialization(mock_enterprise_pat_env_vars):
+    """Test JiraFetcher initialization with enterprise PAT."""
+    fetcher = JiraFetcher()
+    assert fetcher.config.url == "https://jira.enterprise.com"
+    assert fetcher.config.auth_type.value == "pat"
+    assert fetcher.config.pat == "test_pat"
+    assert fetcher.config.is_cloud is False
+
+
+def test_jira_fetcher_initialization_missing_url():
+    """Test JiraFetcher initialization with missing URL."""
+    with patch.dict(os.environ, {"JIRA_AUTH_TYPE": "api_token"}, clear=True):
+        with pytest.raises(ValueError, match="JIRA_URL environment variable is required"):
+            JiraFetcher()
+
+
+def test_jira_fetcher_initialization_invalid_auth_type():
+    """Test JiraFetcher initialization with invalid auth type."""
+    with patch.dict(
+        os.environ,
+        {
+            "JIRA_URL": "https://example.com",
+            "JIRA_AUTH_TYPE": "invalid",
+        },
+        clear=True,
+    ):
+        with pytest.raises(ValueError, match="Invalid JIRA_AUTH_TYPE"):
+            JiraFetcher()
+
+
+def test_jira_fetcher_initialization_missing_auth_credentials():
+    """Test JiraFetcher initialization with missing auth credentials."""
+    # Test API token auth without credentials
+    with patch.dict(
+        os.environ,
+        {
+            "JIRA_URL": "https://example.com",
+            "JIRA_AUTH_TYPE": "api_token",
+        },
+        clear=True,
+    ):
+        with pytest.raises(ValueError, match="JIRA_USERNAME and JIRA_API_TOKEN are required"):
+            JiraFetcher()
+
+    # Test basic auth without credentials
+    with patch.dict(
+        os.environ,
+        {
+            "JIRA_URL": "https://example.com",
+            "JIRA_AUTH_TYPE": "basic",
+        },
+        clear=True,
+    ):
+        with pytest.raises(ValueError, match="JIRA_USERNAME and JIRA_PASSWORD are required"):
+            JiraFetcher()
+
+    # Test PAT auth without token
+    with patch.dict(
+        os.environ,
+        {
+            "JIRA_URL": "https://example.com",
+            "JIRA_AUTH_TYPE": "pat",
+        },
+        clear=True,
+    ):
+        with pytest.raises(ValueError, match="JIRA_PAT is required"):
             JiraFetcher()
 
 
@@ -89,7 +193,20 @@ def test_get_issue(mock_jira_fetcher):
 
 def test_get_issue_with_comments(mock_jira_fetcher):
     """Test getting an issue with comments."""
-    document = mock_jira_fetcher.get_issue("PROJ-123")
+    # Configure mock to return comments
+    mock_jira_fetcher.jira.issue_get_comments.return_value = {
+        "comments": [
+            {
+                "id": "1",
+                "body": "This is a test comment",
+                "created": "2024-01-01T10:00:00.000+0000",
+                "updated": "2024-01-01T10:00:00.000+0000",
+                "author": {"displayName": "Comment User"},
+            }
+        ]
+    }
+
+    document = mock_jira_fetcher.get_issue("PROJ-123", comment_limit=1)
 
     # Verify comments are included in content
     assert "2024-01-01 - Comment User: This is a test comment" in document.page_content
